@@ -1,35 +1,36 @@
-//˵������
+//说明部分
 /*
-����CTP API�к��ʽ�ת����صĺ���̫�࣬
-ͬʱҲ�Ѿ��д����Ŀͻ���֧����Щ���ܣ�
-��������Python��װ����ʱѡ��ֻ֧�ֽ��׹���
+由于CTP API中和资金转账相关的函数太多，
+同时也已经有大量的客户端支持这些功能，
+因此在这个Python封装中暂时选择只支持交易功能
 */
 
 
-//ϵͳ
+//系统
 #include <string>
 #include <queue>
 
 //Boost
 #define BOOST_PYTHON_STATIC_LIB
-#include <boost/python/module.hpp>	//python��װ
-#include <boost/python/def.hpp>		//python��װ
-#include <boost/python/dict.hpp>	//python��װ
-#include <boost/python/object.hpp>	//python��װ
-#include <boost/python.hpp>			//python��װ
-#include <boost/thread.hpp>			//������е��̹߳���
-#include <boost/bind.hpp>			//������е��̹߳���
-#include <boost/any.hpp>			//������е�����ʵ��
+#include <boost/python/module.hpp>	//python封装
+#include <boost/python/def.hpp>		//python封装
+#include <boost/python/dict.hpp>	//python封装
+#include <boost/python/object.hpp>	//python封装
+#include <boost/python.hpp>			//python封装
+#include <boost/thread.hpp>			//任务队列的线程功能
+#include <boost/bind.hpp>			//任务队列的线程功能
+#include <boost/any.hpp>			//任务队列的任务实现
+#include <boost/locale.hpp>			//字符集转换
 
 //API
 #include "ThostFtdcTraderApi.h"
 
-//�����ռ�
+//命名空间
 using namespace std;
 using namespace boost::python;
 using namespace boost;
 
-//����
+//常量
 #define ONFRONTCONNECTED 1
 #define ONFRONTDISCONNECTED 2
 #define ONHEARTBEATWARNING 3
@@ -147,24 +148,24 @@ using namespace boost;
 
 
 ///-------------------------------------------------------------------------------------
-///API�еĲ������
+///API中的部分组件
 ///-------------------------------------------------------------------------------------
 
-//GILȫ�����򻯻�ȡ�ã�
-//���ڰ���C++�̻߳��GIL�����Ӷ���ֹpython����
+//GIL全局锁简化获取用，
+//用于帮助C++线程获得GIL锁，从而防止python崩溃
 class PyLock
 {
 private:
 	PyGILState_STATE gil_state;
 
 public:
-	//��ĳ�����������д����ö���ʱ�����GIL��
+	//在某个函数方法中创建该对象时，获得GIL锁
 	PyLock()
 	{
 		gil_state = PyGILState_Ensure();
 	}
 
-	//��ĳ��������ɺ����ٸö���ʱ�����GIL��
+	//在某个函数完成后销毁该对象时，解放GIL锁
 	~PyLock()
 	{
 		PyGILState_Release(gil_state);
@@ -172,90 +173,90 @@ public:
 };
 
 
-//����ṹ��
+//任务结构体
 struct Task
 {
-	int task_name;		//�ص��������ƶ�Ӧ�ĳ���
-	any task_data;		//���ݽṹ��
-	any task_error;		//����ṹ��
-	int task_id;		//����id
-	bool task_last;		//�Ƿ�Ϊ��󷵻�
+	int task_name;		//回调函数名称对应的常量
+	any task_data;		//数据结构体
+	any task_error;		//错误结构体
+	int task_id;		//请求id
+	bool task_last;		//是否为最后返回
 };
 
 
-///�̰߳�ȫ�Ķ���
+///线程安全的队列
 template<typename Data>
 
 class ConcurrentQueue
 {
 private:
-	queue<Data> the_queue;								//��׼�����
-	mutable mutex the_mutex;							//boost������
-	condition_variable the_condition_variable;			//boost��������
+	queue<Data> the_queue;								//标准库队列
+	mutable mutex the_mutex;							//boost互斥锁
+	condition_variable the_condition_variable;			//boost条件变量
 
 public:
 
-	//�����µ�����
+	//存入新的任务
 	void push(Data const& data)
 	{
-		mutex::scoped_lock lock(the_mutex);				//��ȡ������
-		the_queue.push(data);							//������д�������
-		lock.unlock();									//�ͷ���
-		the_condition_variable.notify_one();			//֪ͨ���������ȴ����߳�
+		mutex::scoped_lock lock(the_mutex);				//获取互斥锁
+		the_queue.push(data);							//向队列中存入数据
+		lock.unlock();									//释放锁
+		the_condition_variable.notify_one();			//通知正在阻塞等待的线程
 	}
 
-	//�������Ƿ�Ϊ��
+	//检查队列是否为空
 	bool empty() const
 	{
 		mutex::scoped_lock lock(the_mutex);
 		return the_queue.empty();
 	}
 
-	//ȡ��
+	//取出
 	Data wait_and_pop()
 	{
 		mutex::scoped_lock lock(the_mutex);
 
-		while (the_queue.empty())						//������Ϊ��ʱ
+		while (the_queue.empty())						//当队列为空时
 		{
-			the_condition_variable.wait(lock);			//�ȴ���������֪ͨ
+			the_condition_variable.wait(lock);			//等待条件变量通知
 		}
 
-		Data popped_value = the_queue.front();			//��ȡ�����е����һ������
-		the_queue.pop();								//ɾ��������
-		return popped_value;							//���ظ�����
+		Data popped_value = the_queue.front();			//获取队列中的最后一个任务
+		the_queue.pop();								//删除该任务
+		return popped_value;							//返回该任务
 	}
 
 };
 
 
-//���ֵ��л�ȡĳ����ֵ��Ӧ������������ֵ������ṹ������ֵ��
+//从字典中获取某个建值对应的整数，并赋值到请求结构体对象的值上
 void getInt(dict d, string key, int* value);
 
 
-//���ֵ��л�ȡĳ����ֵ��Ӧ�ĸ�����������ֵ������ṹ������ֵ��
+//从字典中获取某个建值对应的浮点数，并赋值到请求结构体对象的值上
 void getDouble(dict d, string key, double* value);
 
 
-//���ֵ��л�ȡĳ����ֵ��Ӧ���ַ�������ֵ������ṹ������ֵ��
+//从字典中获取某个建值对应的字符，并赋值到请求结构体对象的值上
 void getChar(dict d, string key, char* value);
 
 
-//���ֵ��л�ȡĳ����ֵ��Ӧ���ַ���������ֵ������ṹ������ֵ��
+//从字典中获取某个建值对应的字符串，并赋值到请求结构体对象的值上
 void getStr(dict d, string key, char* value);
 
 
 ///-------------------------------------------------------------------------------------
-///C++ SPI�Ļص���������ʵ��
+///C++ SPI的回调函数方法实现
 ///-------------------------------------------------------------------------------------
 
-//API�ļ̳�ʵ��
+//API的继承实现
 class TdApi : public CThostFtdcTraderSpi
 {
 private:
-	CThostFtdcTraderApi* api;			//API����
-	thread *task_thread;				//�����߳�ָ�루��python���������ݣ�
-	ConcurrentQueue<Task> task_queue;	//�������
+	CThostFtdcTraderApi* api;			//API对象
+	thread *task_thread;				//工作线程指针（向python中推送数据）
+	ConcurrentQueue<Task> task_queue;	//任务队列
 
 public:
 	TdApi()
@@ -270,358 +271,358 @@ public:
 	};
 
 	//-------------------------------------------------------------------------------------
-	//API�ص�����
+	//API回调函数
 	//-------------------------------------------------------------------------------------
 
-	///���ͻ����뽻�׺�̨������ͨ������ʱ����δ��¼ǰ�����÷��������á�
+	///当客户端与交易后台建立起通信连接时（还未登录前），该方法被调用。
 	virtual void OnFrontConnected();
 
-	///���ͻ����뽻�׺�̨ͨ�����ӶϿ�ʱ���÷��������á���������������API���Զ��������ӣ��ͻ��˿ɲ���������
-	///@param nReason ����ԭ��
-	///        0x1001 �����ʧ��
-	///        0x1002 ����дʧ��
-	///        0x2001 ����������ʱ
-	///        0x2002 ��������ʧ��
-	///        0x2003 �յ�������
+	///当客户端与交易后台通信连接断开时，该方法被调用。当发生这个情况后，API会自动重新连接，客户端可不做处理。
+	///@param nReason 错误原因
+	///        0x1001 网络读失败
+	///        0x1002 网络写失败
+	///        0x2001 接收心跳超时
+	///        0x2002 发送心跳失败
+	///        0x2003 收到错误报文
 	virtual void OnFrontDisconnected(int nReason);
 
-	///������ʱ���档����ʱ��δ�յ�����ʱ���÷��������á�
-	///@param nTimeLapse �����ϴν��ձ��ĵ�ʱ��
+	///心跳超时警告。当长时间未收到报文时，该方法被调用。
+	///@param nTimeLapse 距离上次接收报文的时间
 	virtual void OnHeartBeatWarning(int nTimeLapse);
 
-	///�ͻ�����֤��Ӧ
+	///客户端认证响应
 	virtual void OnRspAuthenticate(CThostFtdcRspAuthenticateField *pRspAuthenticateField, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
 
-	///��¼������Ӧ
+	///登录请求响应
 	virtual void OnRspUserLogin(CThostFtdcRspUserLoginField *pRspUserLogin, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�ǳ�������Ӧ
+	///登出请求响应
 	virtual void OnRspUserLogout(CThostFtdcUserLogoutField *pUserLogout, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�û��������������Ӧ
+	///用户口令更新请求响应
 	virtual void OnRspUserPasswordUpdate(CThostFtdcUserPasswordUpdateField *pUserPasswordUpdate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�ʽ��˻��������������Ӧ
+	///资金账户口令更新请求响应
 	virtual void OnRspTradingAccountPasswordUpdate(CThostFtdcTradingAccountPasswordUpdateField *pTradingAccountPasswordUpdate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///����¼��������Ӧ
+	///报单录入请求响应
 	virtual void OnRspOrderInsert(CThostFtdcInputOrderField *pInputOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///Ԥ��¼��������Ӧ
+	///预埋单录入请求响应
 	virtual void OnRspParkedOrderInsert(CThostFtdcParkedOrderField *pParkedOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///Ԥ�񳷵�¼��������Ӧ
+	///预埋撤单录入请求响应
 	virtual void OnRspParkedOrderAction(CThostFtdcParkedOrderActionField *pParkedOrderAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///��������������Ӧ
+	///报单操作请求响应
 	virtual void OnRspOrderAction(CThostFtdcInputOrderActionField *pInputOrderAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///��ѯ��󱨵�������Ӧ
+	///查询最大报单数量响应
 	virtual void OnRspQueryMaxOrderVolume(CThostFtdcQueryMaxOrderVolumeField *pQueryMaxOrderVolume, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///Ͷ���߽�����ȷ����Ӧ
+	///投资者结算结果确认响应
 	virtual void OnRspSettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField *pSettlementInfoConfirm, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///ɾ��Ԥ����Ӧ
+	///删除预埋单响应
 	virtual void OnRspRemoveParkedOrder(CThostFtdcRemoveParkedOrderField *pRemoveParkedOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///ɾ��Ԥ�񳷵���Ӧ
+	///删除预埋撤单响应
 	virtual void OnRspRemoveParkedOrderAction(CThostFtdcRemoveParkedOrderActionField *pRemoveParkedOrderAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///ִ������¼��������Ӧ
+	///执行宣告录入请求响应
 	virtual void OnRspExecOrderInsert(CThostFtdcInputExecOrderField *pInputExecOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///ִ���������������Ӧ
+	///执行宣告操作请求响应
 	virtual void OnRspExecOrderAction(CThostFtdcInputExecOrderActionField *pInputExecOrderAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///ѯ��¼��������Ӧ
+	///询价录入请求响应
 	virtual void OnRspForQuoteInsert(CThostFtdcInputForQuoteField *pInputForQuote, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///����¼��������Ӧ
+	///报价录入请求响应
 	virtual void OnRspQuoteInsert(CThostFtdcInputQuoteField *pInputQuote, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///���۲���������Ӧ
+	///报价操作请求响应
 	virtual void OnRspQuoteAction(CThostFtdcInputQuoteActionField *pInputQuoteAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///����Ӧ��
+	///锁定应答
 	virtual void OnRspLockInsert(CThostFtdcInputLockField *pInputLock, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�������¼��������Ӧ
+	///申请组合录入请求响应
 	virtual void OnRspCombActionInsert(CThostFtdcInputCombActionField *pInputCombAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������Ӧ
+	///请求查询报单响应
 	virtual void OnRspQryOrder(CThostFtdcOrderField *pOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ�ɽ���Ӧ
+	///请求查询成交响应
 	virtual void OnRspQryTrade(CThostFtdcTradeField *pTrade, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ���ֲ߳���Ӧ
+	///请求查询投资者持仓响应
 	virtual void OnRspQryInvestorPosition(CThostFtdcInvestorPositionField *pInvestorPosition, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ�ʽ��˻���Ӧ
+	///请求查询资金账户响应
 	virtual void OnRspQryTradingAccount(CThostFtdcTradingAccountField *pTradingAccount, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ������Ӧ
+	///请求查询投资者响应
 	virtual void OnRspQryInvestor(CThostFtdcInvestorField *pInvestor, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ���ױ�����Ӧ
+	///请求查询交易编码响应
 	virtual void OnRspQryTradingCode(CThostFtdcTradingCodeField *pTradingCode, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Լ��֤������Ӧ
+	///请求查询合约保证金率响应
 	virtual void OnRspQryInstrumentMarginRate(CThostFtdcInstrumentMarginRateField *pInstrumentMarginRate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Լ����������Ӧ
+	///请求查询合约手续费率响应
 	virtual void OnRspQryInstrumentCommissionRate(CThostFtdcInstrumentCommissionRateField *pInstrumentCommissionRate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��������Ӧ
+	///请求查询交易所响应
 	virtual void OnRspQryExchange(CThostFtdcExchangeField *pExchange, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Ʒ��Ӧ
+	///请求查询产品响应
 	virtual void OnRspQryProduct(CThostFtdcProductField *pProduct, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Լ��Ӧ
+	///请求查询合约响应
 	virtual void OnRspQryInstrument(CThostFtdcInstrumentField *pInstrument, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������Ӧ
+	///请求查询行情响应
 	virtual void OnRspQryDepthMarketData(CThostFtdcDepthMarketDataField *pDepthMarketData, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ���߽�������Ӧ
+	///请求查询投资者结算结果响应
 	virtual void OnRspQrySettlementInfo(CThostFtdcSettlementInfoField *pSettlementInfo, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯת��������Ӧ
+	///请求查询转帐银行响应
 	virtual void OnRspQryTransferBank(CThostFtdcTransferBankField *pTransferBank, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ���ֲ߳���ϸ��Ӧ
+	///请求查询投资者持仓明细响应
 	virtual void OnRspQryInvestorPositionDetail(CThostFtdcInvestorPositionDetailField *pInvestorPositionDetail, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ�ͻ�֪ͨ��Ӧ
+	///请求查询客户通知响应
 	virtual void OnRspQryNotice(CThostFtdcNoticeField *pNotice, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������Ϣȷ����Ӧ
+	///请求查询结算信息确认响应
 	virtual void OnRspQrySettlementInfoConfirm(CThostFtdcSettlementInfoConfirmField *pSettlementInfoConfirm, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ���ֲ߳���ϸ��Ӧ
+	///请求查询投资者持仓明细响应
 	virtual void OnRspQryInvestorPositionCombineDetail(CThostFtdcInvestorPositionCombineDetailField *pInvestorPositionCombineDetail, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///��ѯ��֤����ϵͳ���͹�˾�ʽ��˻���Կ��Ӧ
+	///查询保证金监管系统经纪公司资金账户密钥响应
 	virtual void OnRspQryCFMMCTradingAccountKey(CThostFtdcCFMMCTradingAccountKeyField *pCFMMCTradingAccountKey, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ�ֵ��۵���Ϣ��Ӧ
+	///请求查询仓单折抵信息响应
 	virtual void OnRspQryEWarrantOffset(CThostFtdcEWarrantOffsetField *pEWarrantOffset, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ����Ʒ��/��Ʒ�ֱ�֤����Ӧ
+	///请求查询投资者品种/跨品种保证金响应
 	virtual void OnRspQryInvestorProductGroupMargin(CThostFtdcInvestorProductGroupMarginField *pInvestorProductGroupMargin, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��������֤������Ӧ
+	///请求查询交易所保证金率响应
 	virtual void OnRspQryExchangeMarginRate(CThostFtdcExchangeMarginRateField *pExchangeMarginRate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������������֤������Ӧ
+	///请求查询交易所调整保证金率响应
 	virtual void OnRspQryExchangeMarginRateAdjust(CThostFtdcExchangeMarginRateAdjustField *pExchangeMarginRateAdjust, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������Ӧ
+	///请求查询汇率响应
 	virtual void OnRspQryExchangeRate(CThostFtdcExchangeRateField *pExchangeRate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������������Ա����Ȩ����Ӧ
+	///请求查询二级代理操作员银期权限响应
 	virtual void OnRspQrySecAgentACIDMap(CThostFtdcSecAgentACIDMapField *pSecAgentACIDMap, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Ʒ���ۻ���
+	///请求查询产品报价汇率
 	virtual void OnRspQryProductExchRate(CThostFtdcProductExchRateField *pProductExchRate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Ʒ��
+	///请求查询产品组
 	virtual void OnRspQryProductGroup(CThostFtdcProductGroupField *pProductGroup, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Ȩ���׳ɱ���Ӧ
+	///请求查询期权交易成本响应
 	virtual void OnRspQryOptionInstrTradeCost(CThostFtdcOptionInstrTradeCostField *pOptionInstrTradeCost, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Ȩ��Լ��������Ӧ
+	///请求查询期权合约手续费响应
 	virtual void OnRspQryOptionInstrCommRate(CThostFtdcOptionInstrCommRateField *pOptionInstrCommRate, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯִ��������Ӧ
+	///请求查询执行宣告响应
 	virtual void OnRspQryExecOrder(CThostFtdcExecOrderField *pExecOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯѯ����Ӧ
+	///请求查询询价响应
 	virtual void OnRspQryForQuote(CThostFtdcForQuoteField *pForQuote, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ������Ӧ
+	///请求查询报价响应
 	virtual void OnRspQryQuote(CThostFtdcQuoteField *pQuote, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ����Ӧ��
+	///请求查询锁定应答
 	virtual void OnRspQryLock(CThostFtdcLockField *pLock, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ����֤ȯ��λӦ��
+	///请求查询锁定证券仓位应答
 	virtual void OnRspQryLockPosition(CThostFtdcLockPositionField *pLockPosition, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯͶ���߷ּ�
+	///请求查询投资者分级
 	virtual void OnRspQryInvestorLevel(CThostFtdcInvestorLevelField *pInvestorLevel, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯE+1����Ȩ������Ӧ
+	///请求查询E+1日行权冻结响应
 	virtual void OnRspQryExecFreeze(CThostFtdcExecFreezeField *pExecFreeze, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��Ϻ�Լ��ȫϵ����Ӧ
+	///请求查询组合合约安全系数响应
 	virtual void OnRspQryCombInstrumentGuard(CThostFtdcCombInstrumentGuardField *pCombInstrumentGuard, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ���������Ӧ
+	///请求查询申请组合响应
 	virtual void OnRspQryCombAction(CThostFtdcCombActionField *pCombAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯת����ˮ��Ӧ
+	///请求查询转帐流水响应
 	virtual void OnRspQryTransferSerial(CThostFtdcTransferSerialField *pTransferSerial, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ����ǩԼ��ϵ��Ӧ
+	///请求查询银期签约关系响应
 	virtual void OnRspQryAccountregister(CThostFtdcAccountregisterField *pAccountregister, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///����Ӧ��
+	///错误应答
 	virtual void OnRspError(CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///����֪ͨ
+	///报单通知
 	virtual void OnRtnOrder(CThostFtdcOrderField *pOrder) ;
 
-	///�ɽ�֪ͨ
+	///成交通知
 	virtual void OnRtnTrade(CThostFtdcTradeField *pTrade) ;
 
-	///����¼�����ر�
+	///报单录入错误回报
 	virtual void OnErrRtnOrderInsert(CThostFtdcInputOrderField *pInputOrder, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///������������ر�
+	///报单操作错误回报
 	virtual void OnErrRtnOrderAction(CThostFtdcOrderActionField *pOrderAction, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///��Լ����״̬֪ͨ
+	///合约交易状态通知
 	virtual void OnRtnInstrumentStatus(CThostFtdcInstrumentStatusField *pInstrumentStatus) ;
 
-	///����֪ͨ
+	///交易通知
 	virtual void OnRtnTradingNotice(CThostFtdcTradingNoticeInfoField *pTradingNoticeInfo) ;
 
-	///��ʾ������У�����
+	///提示条件单校验错误
 	virtual void OnRtnErrorConditionalOrder(CThostFtdcErrorConditionalOrderField *pErrorConditionalOrder) ;
 
-	///ִ������֪ͨ
+	///执行宣告通知
 	virtual void OnRtnExecOrder(CThostFtdcExecOrderField *pExecOrder) ;
 
-	///ִ������¼�����ر�
+	///执行宣告录入错误回报
 	virtual void OnErrRtnExecOrderInsert(CThostFtdcInputExecOrderField *pInputExecOrder, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///ִ�������������ر�
+	///执行宣告操作错误回报
 	virtual void OnErrRtnExecOrderAction(CThostFtdcExecOrderActionField *pExecOrderAction, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///ѯ��¼�����ر�
+	///询价录入错误回报
 	virtual void OnErrRtnForQuoteInsert(CThostFtdcInputForQuoteField *pInputForQuote, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///����֪ͨ
+	///报价通知
 	virtual void OnRtnQuote(CThostFtdcQuoteField *pQuote) ;
 
-	///����¼�����ر�
+	///报价录入错误回报
 	virtual void OnErrRtnQuoteInsert(CThostFtdcInputQuoteField *pInputQuote, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///���۲�������ر�
+	///报价操作错误回报
 	virtual void OnErrRtnQuoteAction(CThostFtdcQuoteActionField *pQuoteAction, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///ѯ��֪ͨ
+	///询价通知
 	virtual void OnRtnForQuoteRsp(CThostFtdcForQuoteRspField *pForQuoteRsp) ;
 
-	///��֤���������û�����
+	///保证金监控中心用户令牌
 	virtual void OnRtnCFMMCTradingAccountToken(CThostFtdcCFMMCTradingAccountTokenField *pCFMMCTradingAccountToken) ;
 
-	///����֪ͨ
+	///锁定通知
 	virtual void OnRtnLock(CThostFtdcLockField *pLock) ;
 
-	///��������֪ͨ
+	///锁定错误通知
 	virtual void OnErrRtnLockInsert(CThostFtdcInputLockField *pInputLock, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///�������֪ͨ
+	///申请组合通知
 	virtual void OnRtnCombAction(CThostFtdcCombActionField *pCombAction) ;
 
-	///�������¼�����ر�
+	///申请组合录入错误回报
 	virtual void OnErrRtnCombActionInsert(CThostFtdcInputCombActionField *pInputCombAction, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///�����ѯǩԼ������Ӧ
+	///请求查询签约银行响应
 	virtual void OnRspQryContractBank(CThostFtdcContractBankField *pContractBank, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯԤ����Ӧ
+	///请求查询预埋单响应
 	virtual void OnRspQryParkedOrder(CThostFtdcParkedOrderField *pParkedOrder, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯԤ�񳷵���Ӧ
+	///请求查询预埋撤单响应
 	virtual void OnRspQryParkedOrderAction(CThostFtdcParkedOrderActionField *pParkedOrderAction, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ����֪ͨ��Ӧ
+	///请求查询交易通知响应
 	virtual void OnRspQryTradingNotice(CThostFtdcTradingNoticeField *pTradingNotice, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ���͹�˾���ײ�����Ӧ
+	///请求查询经纪公司交易参数响应
 	virtual void OnRspQryBrokerTradingParams(CThostFtdcBrokerTradingParamsField *pBrokerTradingParams, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ���͹�˾�����㷨��Ӧ
+	///请求查询经纪公司交易算法响应
 	virtual void OnRspQryBrokerTradingAlgos(CThostFtdcBrokerTradingAlgosField *pBrokerTradingAlgos, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�����ѯ��������û�����
+	///请求查询监控中心用户令牌
 	virtual void OnRspQueryCFMMCTradingAccountToken(CThostFtdcQueryCFMMCTradingAccountTokenField *pQueryCFMMCTradingAccountToken, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///���з��������ʽ�ת�ڻ�֪ͨ
+	///银行发起银行资金转期货通知
 	virtual void OnRtnFromBankToFutureByBank(CThostFtdcRspTransferField *pRspTransfer) ;
 
-	///���з����ڻ��ʽ�ת����֪ͨ
+	///银行发起期货资金转银行通知
 	virtual void OnRtnFromFutureToBankByBank(CThostFtdcRspTransferField *pRspTransfer) ;
 
-	///���з����������ת�ڻ�֪ͨ
+	///银行发起冲正银行转期货通知
 	virtual void OnRtnRepealFromBankToFutureByBank(CThostFtdcRspRepealField *pRspRepeal) ;
 
-	///���з�������ڻ�ת����֪ͨ
+	///银行发起冲正期货转银行通知
 	virtual void OnRtnRepealFromFutureToBankByBank(CThostFtdcRspRepealField *pRspRepeal) ;
 
-	///�ڻ����������ʽ�ת�ڻ�֪ͨ
+	///期货发起银行资金转期货通知
 	virtual void OnRtnFromBankToFutureByFuture(CThostFtdcRspTransferField *pRspTransfer) ;
 
-	///�ڻ������ڻ��ʽ�ת����֪ͨ
+	///期货发起期货资金转银行通知
 	virtual void OnRtnFromFutureToBankByFuture(CThostFtdcRspTransferField *pRspTransfer) ;
 
-	///ϵͳ����ʱ�ڻ����ֹ������������ת�ڻ��������д�����Ϻ��̷��ص�֪ͨ
+	///系统运行时期货端手工发起冲正银行转期货请求，银行处理完毕后报盘发回的通知
 	virtual void OnRtnRepealFromBankToFutureByFutureManual(CThostFtdcRspRepealField *pRspRepeal) ;
 
-	///ϵͳ����ʱ�ڻ����ֹ���������ڻ�ת�����������д�����Ϻ��̷��ص�֪ͨ
+	///系统运行时期货端手工发起冲正期货转银行请求，银行处理完毕后报盘发回的通知
 	virtual void OnRtnRepealFromFutureToBankByFutureManual(CThostFtdcRspRepealField *pRspRepeal) ;
 
-	///�ڻ������ѯ�������֪ͨ
+	///期货发起查询银行余额通知
 	virtual void OnRtnQueryBankBalanceByFuture(CThostFtdcNotifyQueryAccountField *pNotifyQueryAccount) ;
 
-	///�ڻ����������ʽ�ת�ڻ�����ر�
+	///期货发起银行资金转期货错误回报
 	virtual void OnErrRtnBankToFutureByFuture(CThostFtdcReqTransferField *pReqTransfer, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///�ڻ������ڻ��ʽ�ת���д���ر�
+	///期货发起期货资金转银行错误回报
 	virtual void OnErrRtnFutureToBankByFuture(CThostFtdcReqTransferField *pReqTransfer, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///ϵͳ����ʱ�ڻ����ֹ������������ת�ڻ�����ر�
+	///系统运行时期货端手工发起冲正银行转期货错误回报
 	virtual void OnErrRtnRepealBankToFutureByFutureManual(CThostFtdcReqRepealField *pReqRepeal, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///ϵͳ����ʱ�ڻ����ֹ���������ڻ�ת���д���ر�
+	///系统运行时期货端手工发起冲正期货转银行错误回报
 	virtual void OnErrRtnRepealFutureToBankByFutureManual(CThostFtdcReqRepealField *pReqRepeal, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///�ڻ������ѯ����������ر�
+	///期货发起查询银行余额错误回报
 	virtual void OnErrRtnQueryBankBalanceByFuture(CThostFtdcReqQueryAccountField *pReqQueryAccount, CThostFtdcRspInfoField *pRspInfo) ;
 
-	///�ڻ������������ת�ڻ��������д�����Ϻ��̷��ص�֪ͨ
+	///期货发起冲正银行转期货请求，银行处理完毕后报盘发回的通知
 	virtual void OnRtnRepealFromBankToFutureByFuture(CThostFtdcRspRepealField *pRspRepeal) ;
 
-	///�ڻ���������ڻ�ת�����������д�����Ϻ��̷��ص�֪ͨ
+	///期货发起冲正期货转银行请求，银行处理完毕后报盘发回的通知
 	virtual void OnRtnRepealFromFutureToBankByFuture(CThostFtdcRspRepealField *pRspRepeal) ;
 
-	///�ڻ����������ʽ�ת�ڻ�Ӧ��
+	///期货发起银行资金转期货应答
 	virtual void OnRspFromBankToFutureByFuture(CThostFtdcReqTransferField *pReqTransfer, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�ڻ������ڻ��ʽ�ת����Ӧ��
+	///期货发起期货资金转银行应答
 	virtual void OnRspFromFutureToBankByFuture(CThostFtdcReqTransferField *pReqTransfer, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///�ڻ������ѯ�������Ӧ��
+	///期货发起查询银行余额应答
 	virtual void OnRspQueryBankAccountMoneyByFuture(CThostFtdcReqQueryAccountField *pReqQueryAccount, CThostFtdcRspInfoField *pRspInfo, int nRequestID, bool bIsLast) ;
 
-	///���з������ڿ���֪ͨ
+	///银行发起银期开户通知
 	virtual void OnRtnOpenAccountByBank(CThostFtdcOpenAccountField *pOpenAccount) ;
 
-	///���з�����������֪ͨ
+	///银行发起银期销户通知
 	virtual void OnRtnCancelAccountByBank(CThostFtdcCancelAccountField *pCancelAccount) ;
 
-	///���з����������˺�֪ͨ
+	///银行发起变更银行账号通知
 	virtual void OnRtnChangeAccountByBank(CThostFtdcChangeAccountField *pChangeAccount) ;
 
 	//-------------------------------------------------------------------------------------
-	//task������
+	//task：任务
 	//-------------------------------------------------------------------------------------
 
 	void processTask();
@@ -853,11 +854,11 @@ public:
 	void processRtnChangeAccountByBank(Task task);
 
 	//-------------------------------------------------------------------------------------
-	//data���ص������������ֵ�
-	//error���ص������Ĵ����ֵ�
-	//id������id
-	//last���Ƿ�Ϊ��󷵻�
-	//i������
+	//data：回调函数的数据字典
+	//error：回调函数的错误字典
+	//id：请求id
+	//last：是否为最后返回
+	//i：整数
 	//-------------------------------------------------------------------------------------
 
 	virtual void onFrontConnected(){};
@@ -1088,7 +1089,7 @@ public:
 
 
 	//-------------------------------------------------------------------------------------
-	//req:���������������ֵ�
+	//req:主动函数的请求字典
 	//-------------------------------------------------------------------------------------
 
 	void createFtdcTraderApi(string pszFlowPath = "");
