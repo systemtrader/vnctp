@@ -20,7 +20,7 @@ endif()
 # 设置C++ API源文件的所在目录
 message("Under unix: " ${CMAKE_SIZEOF_VOID_P})
 if (CMAKE_SIZEOF_VOID_P MATCHES "8")  # 检查当前电脑是否是64位的
-    set(CTPAPI_PATH api/x64_linux) # 设置ctpapi的搜索路径
+    set(CTPAPI_PATH api) # 设置ctpapi的搜索路径
 endif()
 include_directories(${CTPAPI_PATH}) # 添加到include文件的搜索路径
 set(CTPAPI_LIBRARY )
