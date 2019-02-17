@@ -1,13 +1,14 @@
 build/
 
-*.so
 *.con
 
+# for windows
 *.dll
 *.sln
 *.pyd
 
+# editor
 .idea
 .vscode
 
-boost*/
+test/*.so
