@@ -1,0 +1,12 @@
+version: "3"
+
+services:
+  vnctp:
+    image: vnctp:latest
+    build: .
+    stdin_open: true
+    tty: true
+    volumes:
+      - .:/root/vnctp/
+    ports:
+      - "2222:22"

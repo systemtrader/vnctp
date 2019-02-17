@@ -1,0 +1,13 @@
+build/
+
+*.so
+*.con
+
+*.dll
+*.sln
+*.pyd
+
+.idea
+.vscode
+
+boost*/
