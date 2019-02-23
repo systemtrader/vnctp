@@ -13,16 +13,14 @@ RUN apt-get clean \
 
 WORKDIR /root/vnctp
 
-COPY user-config.jam /root/
-
 # Install boost manually
-RUN wget http://sourceforge.net/projects/boost/files/boost/1.66.0/boost_1_66_0.tar.gz/download \
-    && mv download boost_1_66_0.tar.gz \
-    && tar -xvzf boost_1_66_0.tar.gz && cd ./boost_1_66_0 \
-    && ./bootstrap.sh --with-python=/usr/bin/python3 --with-python-version=3.5 --with-libraries=python,locale,thread,date_time,system,chrono \
-    && ./b2 install \
-    && /bin/sh
+# RUN wget http://sourceforge.net/projects/boost/files/boost/1.66.0/boost_1_66_0.tar.gz/download \
+    # && mv download boost_1_66_0.tar.gz \
 
-# ./build.sh
+COPY user-config.jam /root/
+COPY boost_1_66_0.tar.gz .
+RUN tar -xvzf boost_1_66_0.tar.gz && cd ./boost_1_66_0 \
+    && ./bootstrap.sh --with-python=/usr/bin/python3 --with-python-version=3.5 --with-libraries=python,locale,thread,date_time,system,chrono \
+    && ./b2 install
 
 EXPOSE 22

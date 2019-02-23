@@ -20,12 +20,3 @@ docker-compose up
 python3 test/mdtest.py
 python3 test/tdtest.py
 ```
-
-Problem:
-
-```txt
-# python3 test/tdtest.py
-onFrontConnected
-terminate called after throwing an instance of 'boost::python::error_already_set'
-Aborted
-```
