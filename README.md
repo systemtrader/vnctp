@@ -20,3 +20,7 @@ docker-compose up
 python3 test/mdtest.py
 python3 test/tdtest.py
 ```
+
+## Reference
+
+- [vnpy的ctp接口编译——ubuntu、python3环境](https://www.wepin.online/blog/0015423531636106a227723e4d74f21b6febcdef77a493f000)
